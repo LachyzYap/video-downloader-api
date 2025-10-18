@@ -1,8 +1,8 @@
 const express = require('express');
 const cors = require('cors');
-const ytdl = require('@distube/ytdl-core');
-const https = require('https');
-const http = require('http');
+const { exec } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(cors());
@@ -10,68 +10,46 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-// Helper function to download from direct URL
-function downloadFromUrl(url) {
+// Simplified downloader using yt-dlp command (we'll install it in Railway)
+async function downloadVideo(url, platform) {
   return new Promise((resolve, reject) => {
-    const protocol = url.startsWith('https') ? https : http;
-    protocol.get(url, (response) => {
-      if (response.statusCode === 302 || response.statusCode === 301) {
-        // Follow redirect
-        downloadFromUrl(response.headers.location).then(resolve).catch(reject);
-        return;
+    const outputPath = `/tmp/video_${Date.now()}.mp4`;
+    
+    let command;
+    
+    if (platform === 'youtube') {
+      // Use yt-dlp for YouTube
+      command = `yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --merge-output-format mp4 -o "${outputPath}" "${url}"`;
+    } else if (platform === 'tiktok') {
+      // Use yt-dlp for TikTok (it supports TikTok too)
+      command = `yt-dlp -o "${outputPath}" "${url}"`;
+    } else {
+      return reject(new Error(`Platform ${platform} not yet supported`));
+    }
+    
+    console.log(`Running: ${command}`);
+    
+    exec(command, { timeout: 300000 }, (error, stdout, stderr) => {
+      if (error) {
+        console.error('Download error:', stderr);
+        return reject(new Error(`Download failed: ${error.message}`));
       }
       
-      const chunks = [];
-      response.on('data', (chunk) => chunks.push(chunk));
-      response.on('end', () => resolve(Buffer.concat(chunks)));
-      response.on('error', reject);
+      // Read the downloaded file
+      fs.readFile(outputPath, (err, data) => {
+        // Clean up
+        fs.unlink(outputPath, () => {});
+        
+        if (err) {
+          return reject(new Error(`Failed to read file: ${err.message}`));
+        }
+        
+        resolve(data);
+      });
     });
   });
 }
 
-// TikTok downloader
-async function downloadTikTok(url) {
-  try {
-    // For TikTok, we'll use a simple approach with TikTok's API
-    const videoId = url.match(/video\/(\d+)/)?.[1];
-    if (!videoId) throw new Error('Invalid TikTok URL');
-    
-    // This is a simplified version - you may need to use TikTok API or scraping
-    const response = await fetch(`https://api16-normal-c-useast1a.tiktokv.com/aweme/v1/feed/?aweme_id=${videoId}`);
-    const data = await response.json();
-    
-    if (!data.aweme_list || !data.aweme_list[0]) {
-      throw new Error('Video not found');
-    }
-    
-    const videoUrl = data.aweme_list[0].video.play_addr.url_list[0];
-    const buffer = await downloadFromUrl(videoUrl);
-    
-    return buffer;
-  } catch (error) {
-    throw new Error(`TikTok download failed: ${error.message}`);
-  }
-}
-
-// YouTube downloader using ytdl-core
-async function downloadYouTube(url) {
-  try {
-    const info = await ytdl.getInfo(url);
-    const format = ytdl.chooseFormat(info.formats, { quality: 'highest', filter: 'videoandaudio' });
-    
-    return new Promise((resolve, reject) => {
-      const chunks = [];
-      ytdl(url, { format: format })
-        .on('data', (chunk) => chunks.push(chunk))
-        .on('end', () => resolve(Buffer.concat(chunks)))
-        .on('error', reject);
-    });
-  } catch (error) {
-    throw new Error(`YouTube download failed: ${error.message}`);
-  }
-}
-
-// Main download endpoint
 app.post('/download', async (req, res) => {
   try {
     const { url, platform } = req.body;
@@ -82,24 +60,7 @@ app.post('/download', async (req, res) => {
     
     console.log(`📥 Downloading from ${platform}: ${url}`);
     
-    let videoBuffer;
-    
-    switch (platform) {
-      case 'youtube':
-        videoBuffer = await downloadYouTube(url);
-        break;
-      case 'tiktok':
-        videoBuffer = await downloadTikTok(url);
-        break;
-      case 'instagram':
-        // Instagram requires more complex handling - we'll add this later
-        return res.status(501).json({ error: 'Instagram support coming soon' });
-      case 'googledrive':
-        // Google Drive requires OAuth - we'll add this later
-        return res.status(501).json({ error: 'Google Drive support coming soon' });
-      default:
-        return res.status(400).json({ error: 'Unsupported platform' });
-    }
+    const videoBuffer = await downloadVideo(url, platform);
     
     // Return video as base64
     const base64Video = videoBuffer.toString('base64');
