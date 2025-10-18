@@ -4,10 +4,13 @@ FROM node:18
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
+    python3-venv \
     ffmpeg \
-    && pip3 install --no-cache-dir yt-dlp \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Install yt-dlp using pip with --break-system-packages flag (needed for newer Python)
+RUN pip3 install --break-system-packages yt-dlp
 
 # Set working directory
 WORKDIR /app
